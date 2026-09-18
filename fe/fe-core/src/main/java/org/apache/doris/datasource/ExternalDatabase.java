@@ -120,6 +120,10 @@ public abstract class ExternalDatabase<T extends ExternalTable>
     }
 
     public void resetMetaToUninitialized() {
+        resetMetaToUninitialized(true);
+    }
+
+    void resetMetaToUninitialized(boolean invalidateRowCountCache) {
         if (LOG.isDebugEnabled()) {
             LOG.debug("resetToUninitialized db name {}, id {}, isInitializing: {}, initialized: {}",
                     this.name, this.id, isInitializing, initialized, new Exception());
@@ -142,7 +146,9 @@ public abstract class ExternalDatabase<T extends ExternalTable>
                 objectInvalidation.run();
             }
         }
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(extCatalog.getId(), getFullName());
+        if (invalidateRowCountCache) {
+            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(extCatalog.getId(), getId(), getFullName());
+        }
     }
 
     public boolean isInitialized() {
@@ -593,6 +599,9 @@ public abstract class ExternalDatabase<T extends ExternalTable>
         // check if the table exists in cache, it not, does return
         ExternalTable dorisTable = getTableForReplay(tableName).orElse(null);
         if (dorisTable == null) {
+            // The table object cache is much smaller than the row-count cache. A drop or rename
+            // must still retire stale row counts when the table object has already been evicted.
+            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateTable(extCatalog.getId(), getFullName(), tableName);
             return;
         }
         // clear the cache related to this table.

@@ -29,6 +29,7 @@ import org.apache.doris.datasource.metacache.MetaCacheEntry;
 import org.apache.doris.datasource.metacache.MetaCacheEntryStats;
 import org.apache.doris.datasource.paimon.PaimonExternalCatalog;
 
+import com.google.common.util.concurrent.Uninterruptibles;
 import mockit.Mock;
 import mockit.MockUp;
 import org.junit.Assert;
@@ -39,6 +40,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -304,12 +306,40 @@ public class ExternalMetaCacheRouteResolverTest {
         mockCurrentCatalog(catalogId, catalog);
         hive.initializedCatalogIds.add(catalogId);
         Map<String, String> oldProperties = Collections.singletonMap("generation", "old");
+        CountDownLatch loadStarted = new CountDownLatch(1);
+        CountDownLatch allowLoadToFinish = new CountDownLatch(1);
+        ExternalRowCountCache.RowCountCacheLoader loader = new ExternalRowCountCache.RowCountCacheLoader() {
+            @Override
+            protected Optional<Long> doLoad(ExternalRowCountCache.RowCountKey rowCountKey) {
+                loadStarted.countDown();
+                Assert.assertTrue(Uninterruptibles.awaitUninterruptibly(
+                        allowLoadToFinish, 30, TimeUnit.SECONDS));
+                return Optional.of(100L);
+            }
+        };
+        ExecutorService loaderExecutor = Executors.newSingleThreadExecutor();
+        metaCacheMgr.replaceRowCountCacheForTest(new ExternalRowCountCache(loaderExecutor, null, loader));
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try {
+            Future<Long> load = caller.submit(
+                    () -> metaCacheMgr.getRowCountCache().getCachedRowCount(catalogId, 2L, 3L, false));
+            Assert.assertTrue(loadStarted.await(30, TimeUnit.SECONDS));
 
-        metaCacheMgr.rollbackCatalogProperties(catalog, oldProperties);
+            metaCacheMgr.rollbackCatalogProperties(catalog, oldProperties);
+            allowLoadToFinish.countDown();
 
-        Mockito.verify(catalog).rollBackCatalogProps(oldProperties);
-        Assert.assertFalse(hive.isCatalogInitialized(catalogId));
-        Assert.assertEquals(1, hive.invalidateCatalogCalls);
+            Assert.assertEquals(TableIf.UNKNOWN_ROW_COUNT, (long) load.get(30, TimeUnit.SECONDS));
+            Assert.assertEquals(TableIf.UNKNOWN_ROW_COUNT,
+                    metaCacheMgr.getRowCountCache().getCachedRowCountIfPresent(catalogId, 2L, 3L));
+            Mockito.verify(catalog).rollBackCatalogProps(oldProperties);
+            Mockito.verify(catalog).resetToUninitialized(false);
+            Assert.assertFalse(hive.isCatalogInitialized(catalogId));
+            Assert.assertEquals(1, hive.invalidateCatalogCalls);
+        } finally {
+            allowLoadToFinish.countDown();
+            caller.shutdownNow();
+            loaderExecutor.shutdownNow();
+        }
     }
 
     @Test

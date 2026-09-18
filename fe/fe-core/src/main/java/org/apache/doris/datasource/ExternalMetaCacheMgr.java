@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.locks.Lock;
@@ -381,9 +382,13 @@ public class ExternalMetaCacheMgr {
 
     public void invalidateCatalog(long catalogId) {
         invalidateLanceTableAccess(catalogId);
-        routeCatalogEngines(catalogId, cache -> safeInvalidate(
-                cache, catalogId, "invalidateCatalog",
-                () -> cache.invalidateCatalogEntries(catalogId)));
+        try {
+            routeCatalogEngines(catalogId, cache -> safeInvalidate(
+                    cache, catalogId, "invalidateCatalog",
+                    () -> cache.invalidateCatalogEntries(catalogId)));
+        } finally {
+            rowCountCache.invalidateCatalog(catalogId);
+        }
     }
 
     public void invalidateCatalogByEngine(long catalogId, String engine) {
@@ -415,6 +420,7 @@ public class ExternalMetaCacheMgr {
                     cache, catalogId, "removeCatalog",
                     () -> cache.invalidateCatalog(catalogId)));
         } finally {
+            rowCountCache.invalidateCatalog(catalogId);
             lifecycleLock.unlock();
         }
     }
@@ -454,6 +460,7 @@ public class ExternalMetaCacheMgr {
                 }
             }
         } finally {
+            rowCountCache.invalidateCatalog(catalogId);
             lifecycleLock.unlock();
         }
     }
@@ -465,10 +472,12 @@ public class ExternalMetaCacheMgr {
         lifecycleLock.lock();
         try {
             catalog.rollBackCatalogProps(oldProperties);
+            catalog.resetToUninitialized(false);
             routeCatalogEngines(catalogId, cache -> safeInvalidate(
                     cache, catalogId, "rollbackCatalogProperties",
                     () -> cache.invalidateCatalog(catalogId)));
         } finally {
+            rowCountCache.invalidateCatalog(catalogId);
             lifecycleLock.unlock();
         }
     }
@@ -486,15 +495,48 @@ public class ExternalMetaCacheMgr {
     }
 
     public void invalidateDb(long catalogId, String dbName) {
-        routeCatalogEngines(catalogId, cache -> safeInvalidate(
-                cache, catalogId, "invalidateDb", () -> cache.invalidateDb(catalogId, dbName)));
+        OptionalLong dbId = getCachedDbId(catalogId, dbName);
+        invalidateDb(catalogId, dbName, dbId);
+    }
+
+    public void invalidateDb(long catalogId, long dbId, String dbName) {
+        invalidateDb(catalogId, dbName, OptionalLong.of(dbId));
+    }
+
+    private void invalidateDb(long catalogId, String dbName, OptionalLong dbId) {
+        try {
+            routeCatalogEngines(catalogId, cache -> safeInvalidate(
+                    cache, catalogId, "invalidateDb", () -> cache.invalidateDb(catalogId, dbName)));
+        } finally {
+            if (dbId.isPresent()) {
+                rowCountCache.invalidateDb(catalogId, dbId.getAsLong());
+            } else {
+                // The database object cache is smaller than the row-count cache. If the object has
+                // already been evicted, retire the catalog scope rather than hashing caller spelling.
+                rowCountCache.invalidateCatalog(catalogId);
+            }
+        }
     }
 
     public void invalidateTable(long catalogId, String dbName, String tableName) {
         invalidateLanceTableAccess(catalogId);
-        routeCatalogEngines(catalogId, cache -> safeInvalidate(
-                cache, catalogId, "invalidateTable",
-                () -> cache.invalidateTable(catalogId, dbName, tableName)));
+        Optional<ExternalDatabase<? extends ExternalTable>> db = getCachedDb(catalogId, dbName);
+        try {
+            routeCatalogEngines(catalogId, cache -> safeInvalidate(
+                    cache, catalogId, "invalidateTable",
+                    () -> cache.invalidateTable(catalogId, dbName, tableName)));
+        } finally {
+            if (db.isPresent()) {
+                Optional<? extends ExternalTable> table = db.get().getTableForReplay(tableName);
+                if (table.isPresent()) {
+                    invalidateRowCountCache(table.get());
+                } else {
+                    rowCountCache.invalidateDb(catalogId, db.get().getId());
+                }
+            } else {
+                rowCountCache.invalidateCatalog(catalogId);
+            }
+        }
     }
 
     public void invalidateTableByEngine(long catalogId, String engine, String dbName, String tableName) {
@@ -514,9 +556,36 @@ public class ExternalMetaCacheMgr {
 
     public void invalidatePartitions(long catalogId,
             String dbName, String tableName, List<String> partitions) {
-        routeCatalogEngines(catalogId, cache -> safeInvalidate(
-                cache, catalogId, "invalidatePartitions",
-                () -> cache.invalidatePartitions(catalogId, dbName, tableName, partitions)));
+        Optional<ExternalDatabase<? extends ExternalTable>> db = getCachedDb(catalogId, dbName);
+        try {
+            routeCatalogEngines(catalogId, cache -> safeInvalidate(
+                    cache, catalogId, "invalidatePartitions",
+                    () -> cache.invalidatePartitions(catalogId, dbName, tableName, partitions)));
+        } finally {
+            if (db.isPresent()) {
+                Optional<? extends ExternalTable> table = db.get().getTableForReplay(tableName);
+                if (table.isPresent()) {
+                    invalidateRowCountCache(table.get());
+                } else {
+                    rowCountCache.invalidateDb(catalogId, db.get().getId());
+                }
+            } else {
+                rowCountCache.invalidateCatalog(catalogId);
+            }
+        }
+    }
+
+    private OptionalLong getCachedDbId(long catalogId, String dbName) {
+        Optional<ExternalDatabase<? extends ExternalTable>> db = getCachedDb(catalogId, dbName);
+        return db.isPresent() ? OptionalLong.of(db.get().getId()) : OptionalLong.empty();
+    }
+
+    private Optional<ExternalDatabase<? extends ExternalTable>> getCachedDb(long catalogId, String dbName) {
+        CatalogIf<?> catalog = getCatalog(catalogId);
+        if (!(catalog instanceof ExternalCatalog)) {
+            return Optional.empty();
+        }
+        return ((ExternalCatalog) catalog).getDbForReplay(dbName);
     }
 
     public List<CatalogMetaCacheStats> getCatalogCacheStats(long catalogId) {
@@ -681,13 +750,30 @@ public class ExternalMetaCacheMgr {
     }
 
     public void invalidateTableCache(ExternalTable dorisTable) {
-        invalidateTable(dorisTable.getCatalog().getId(),
-                dorisTable.getDbName(),
-                dorisTable.getName());
+        long catalogId = dorisTable.getCatalog().getId();
+        try {
+            routeCatalogEngines(catalogId, cache -> safeInvalidate(
+                    cache, catalogId, "invalidateTableCache",
+                    () -> cache.invalidateTable(catalogId, dorisTable.getDbName(), dorisTable.getName())));
+        } finally {
+            invalidateRowCountCache(dorisTable);
+        }
         if (LOG.isDebugEnabled()) {
             LOG.debug("invalid table cache for {}.{} in catalog {}", dorisTable.getRemoteDbName(),
                     dorisTable.getRemoteName(), dorisTable.getCatalog().getName());
         }
+    }
+
+    public void invalidateRowCountCache(ExternalTable table) {
+        rowCountCache.invalidateTable(table.getCatalog().getId(), table.getDb().getId(), table.getId());
+    }
+
+    public void invalidateRowCountCache(long catalogId) {
+        rowCountCache.invalidateCatalog(catalogId);
+    }
+
+    public void invalidateRowCountCache(long catalogId, long dbId) {
+        rowCountCache.invalidateDb(catalogId, dbId);
     }
 
     public LegacyMetaCacheFactory legacyMetaCacheFactory() {
@@ -708,6 +794,10 @@ public class ExternalMetaCacheMgr {
     void replaceEngineCachesForTest(List<? extends ExternalMetaCache> caches) {
         cacheRegistry.resetForTest(caches);
         bindCatalogPreparers();
+    }
+
+    void replaceRowCountCacheForTest(ExternalRowCountCache cache) {
+        rowCountCache = cache;
     }
 
     /**

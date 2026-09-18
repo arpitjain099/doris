@@ -185,6 +185,7 @@ public abstract class ExternalCatalog
     protected ExternalMetadataOps metadataOps;
     protected TransactionManager transactionManager;
     protected MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache;
+    private volatile boolean invalidatingAllMetaCache;
     protected ExecutionAuthenticator executionAuthenticator;
     protected ThreadPoolExecutor threadPoolWithPreAuth;
     // Map lowercase database names to actual remote database names for case-insensitive lookup
@@ -430,7 +431,8 @@ public abstract class ExternalCatalog
                     localDbName -> Optional.ofNullable(
                             buildDbForInit(null, localDbName, Util.genIdByName(name, localDbName), logType,
                                     true)),
-                    (key, value, cause) -> value.ifPresent(v -> v.resetMetaToUninitialized()),
+                    (key, value, cause) -> value.ifPresent(
+                            v -> v.resetMetaToUninitialized(!invalidatingAllMetaCache)),
                     this::acquireMetadataLoadEpoch,
                     this::isMetadataLoadEpochCurrent);
         }
@@ -720,9 +722,15 @@ public abstract class ExternalCatalog
     /**
      * Refresh meta cache only (database level cache), without invalidating catalog level cache.
      */
-    private void refreshMetaCacheOnly() {
+    private synchronized void refreshMetaCacheOnly() {
         if (metaCache != null) {
-            metaCache.invalidateAll();
+            invalidatingAllMetaCache = true;
+            try {
+                metaCache.invalidateAll();
+            } finally {
+                invalidatingAllMetaCache = false;
+            }
+            Env.getCurrentEnv().getExtMetaCacheMgr().getRowCountCache().invalidateCatalog(id);
         }
     }
 
@@ -1228,10 +1236,12 @@ public abstract class ExternalCatalog
         if (LOG.isDebugEnabled()) {
             LOG.debug("unregister database [{}]", dbName);
         }
+        // Resolve the canonical database object before removing it from the local metadata cache.
+        // The row-count cache can outlive that object and must be invalidated by its numeric id.
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbName);
         if (isInitialized()) {
             metaCache.invalidate(dbName, Util.genIdByName(name, dbName));
         }
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbName);
     }
 
     public void registerDatabase(long dbId, String dbName) {

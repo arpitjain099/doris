@@ -1059,6 +1059,7 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         }
         HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr().hive(catalog.getId());
         cache.addPartitionsCache(hmsTable.getOrBuildNameMapping(), partitionNames, partitionColumnTypes);
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         hmsTable.setUpdateTime(updateTime);
     }
 
@@ -1091,6 +1092,7 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         HMSExternalTable hmsTable = (HMSExternalTable) table;
         Env.getCurrentEnv().getExtMetaCacheMgr().hive(catalog.getId())
                 .dropPartitionsCache(hmsTable, partitionNames, true);
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         hmsTable.setUpdateTime(updateTime);
     }
 

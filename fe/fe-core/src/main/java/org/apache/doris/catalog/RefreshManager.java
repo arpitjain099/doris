@@ -182,6 +182,7 @@ public class RefreshManager {
         }
         // See comment in refreshDbInternal for why db and table may be null.
         if (!db.isPresent()) {
+            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(catalog.getId());
             LOG.warn("failed to find db when replaying refresh table: {}", log.debugForRefreshTable());
             return;
         }
@@ -192,6 +193,7 @@ public class RefreshManager {
             table = db.get().getTableForReplay(log.getTableId());
         }
         if (!table.isPresent()) {
+            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(catalog.getId(), db.get().getId());
             LOG.warn("failed to find table when replaying refresh table: {}", log.debugForRefreshTable());
             return;
         }
@@ -209,6 +211,7 @@ public class RefreshManager {
                 HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr()
                         .hive(catalog.getId());
                 cache.refreshAffectedPartitionsCache((HMSExternalTable) table.get(), modifiedPartNames, newPartNames);
+                Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(table.get());
                 if (table.get() instanceof HMSExternalTable && log.getLastUpdateTime() > 0) {
                     ((HMSExternalTable) table.get()).setUpdateTime(log.getLastUpdateTime());
                 }
@@ -295,6 +298,7 @@ public class RefreshManager {
         for (String partitionName : partitionNames) {
             cache.invalidatePartitionCache(externalTable, partitionName);
         }
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(externalTable);
         ((HMSExternalTable) table).setUpdateTime(updateTime);
     }
 

@@ -346,8 +346,10 @@ public class HiveMetadataOps implements ExternalMetadataOps {
                 if (tbl.isPresent()) {
                     Env.getCurrentEnv().getRefreshManager()
                             .refreshTableInternal(db.get(), (ExternalTable) tbl.get(), updateTime);
+                    return;
                 }
             }
+            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateTable(catalog.getId(), dbName, tblName);
         } catch (Exception e) {
             LOG.warn("exception when calling afterTruncateTable for db: {}, table: {}, error: {}",
                     dbName, tblName, e.getMessage(), e);
