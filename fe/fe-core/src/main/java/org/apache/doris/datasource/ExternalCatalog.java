@@ -1238,9 +1238,21 @@ public abstract class ExternalCatalog
         }
         // Resolve the canonical database object before removing it from the local metadata cache.
         // The row-count cache can outlive that object and must be invalidated by its numeric id.
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbName);
-        if (isInitialized()) {
-            metaCache.invalidate(dbName, Util.genIdByName(name, dbName));
+        boolean catalogInitialized = isInitialized();
+        Optional<ExternalDatabase<? extends ExternalTable>> db = catalogInitialized
+                ? getDbForReplay(dbName) : Optional.empty();
+        String localDbName = db.map(ExternalDatabase::getFullName).orElse(dbName);
+        long dbId = db.map(ExternalDatabase::getId).orElseGet(() -> Util.genIdByName(name, localDbName));
+        try {
+            if (db.isPresent()) {
+                Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbId, localDbName);
+            } else {
+                Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbName);
+            }
+        } finally {
+            if (catalogInitialized) {
+                metaCache.invalidate(localDbName, dbId);
+            }
         }
     }
 

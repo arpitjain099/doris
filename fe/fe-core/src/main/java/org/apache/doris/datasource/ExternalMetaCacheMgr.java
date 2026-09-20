@@ -526,23 +526,19 @@ public class ExternalMetaCacheMgr {
                     cache, catalogId, "invalidateTable",
                     () -> cache.invalidateTable(catalogId, dbName, tableName)));
         } finally {
-            if (db.isPresent()) {
-                Optional<? extends ExternalTable> table = db.get().getTableForReplay(tableName);
-                if (table.isPresent()) {
-                    invalidateRowCountCache(table.get());
-                } else {
-                    rowCountCache.invalidateDb(catalogId, db.get().getId());
-                }
-            } else {
-                rowCountCache.invalidateCatalog(catalogId);
-            }
+            invalidateTableRowCount(catalogId, db, tableName);
         }
     }
 
     public void invalidateTableByEngine(long catalogId, String engine, String dbName, String tableName) {
-        routeSpecifiedEngine(engine, cache -> safeInvalidate(
-                cache, catalogId, "invalidateTableByEngine",
-                () -> cache.invalidateTable(catalogId, dbName, tableName)));
+        Optional<ExternalDatabase<? extends ExternalTable>> db = getCachedDb(catalogId, dbName);
+        try {
+            routeSpecifiedEngine(engine, cache -> safeInvalidate(
+                    cache, catalogId, "invalidateTableByEngine",
+                    () -> cache.invalidateTable(catalogId, dbName, tableName)));
+        } finally {
+            invalidateTableRowCount(catalogId, db, tableName);
+        }
     }
 
     private void invalidateLanceTableAccess(long catalogId) {
@@ -562,16 +558,21 @@ public class ExternalMetaCacheMgr {
                     cache, catalogId, "invalidatePartitions",
                     () -> cache.invalidatePartitions(catalogId, dbName, tableName, partitions)));
         } finally {
-            if (db.isPresent()) {
-                Optional<? extends ExternalTable> table = db.get().getTableForReplay(tableName);
-                if (table.isPresent()) {
-                    invalidateRowCountCache(table.get());
-                } else {
-                    rowCountCache.invalidateDb(catalogId, db.get().getId());
-                }
+            invalidateTableRowCount(catalogId, db, tableName);
+        }
+    }
+
+    private void invalidateTableRowCount(long catalogId,
+            Optional<ExternalDatabase<? extends ExternalTable>> db, String tableName) {
+        if (db.isPresent()) {
+            Optional<? extends ExternalTable> table = db.get().getTableForReplay(tableName);
+            if (table.isPresent()) {
+                invalidateRowCountCache(table.get());
             } else {
-                rowCountCache.invalidateCatalog(catalogId);
+                rowCountCache.invalidateDb(catalogId, db.get().getId());
             }
+        } else {
+            rowCountCache.invalidateCatalog(catalogId);
         }
     }
 

@@ -1050,6 +1050,10 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         }
 
         HMSExternalTable hmsTable = (HMSExternalTable) table;
+        // The metastore mutation has already committed when this event is handled. Fence the
+        // independent row-count cache even when the local partition cache cannot represent the
+        // table and this method returns early.
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         List<Type> partitionColumnTypes;
         try {
             partitionColumnTypes = hmsTable.getPartitionColumnTypes(MvccUtil.getSnapshotFromContext(hmsTable));
@@ -1059,7 +1063,6 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         }
         HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr().hive(catalog.getId());
         cache.addPartitionsCache(hmsTable.getOrBuildNameMapping(), partitionNames, partitionColumnTypes);
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         hmsTable.setUpdateTime(updateTime);
     }
 

@@ -114,6 +114,10 @@ public class RefreshManager {
         }
 
         if (!db.isPresent()) {
+            // The database object cache can be cold while row-count entries from an earlier
+            // generation are still resident. Retire the catalog scope because replay cannot
+            // recover a canonical database id without loading remote metadata.
+            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(catalog.getId());
             LOG.warn("failed to find db when replaying refresh db: {}", log.debugForRefreshDb());
         } else {
             refreshDbInternal(db.get());

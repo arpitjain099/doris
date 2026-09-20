@@ -21,8 +21,12 @@ import org.apache.doris.catalog.DatabaseIf;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.DdlException;
+import org.apache.doris.datasource.hive.HMSExternalCatalog;
+import org.apache.doris.datasource.hive.HMSExternalTable;
+import org.apache.doris.datasource.metacache.MetaCache;
 import org.apache.doris.datasource.paimon.PaimonExternalCatalog;
 import org.apache.doris.datasource.property.metastore.AbstractPaimonProperties;
+import org.apache.doris.nereids.exceptions.NotSupportedException;
 
 import com.google.common.collect.ImmutableMap;
 import org.junit.jupiter.api.Assertions;
@@ -35,6 +39,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -52,6 +57,17 @@ public class CatalogMgrTest {
                 (ConcurrentMap<Long, CatalogIf<? extends DatabaseIf<? extends TableIf>>>)
                         idToCatalogField.get(catalogMgr);
         idToCatalog.put(catalog.getId(), catalog);
+    }
+
+    private static void addNamedCatalog(CatalogMgr catalogMgr, ExternalCatalog catalog) throws Exception {
+        addCatalog(catalogMgr, catalog);
+        Field nameToCatalogField = CatalogMgr.class.getDeclaredField("nameToCatalog");
+        nameToCatalogField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ConcurrentMap<String, CatalogIf<? extends DatabaseIf<? extends TableIf>>> nameToCatalog =
+                (ConcurrentMap<String, CatalogIf<? extends DatabaseIf<? extends TableIf>>>)
+                        nameToCatalogField.get(catalogMgr);
+        nameToCatalog.put(catalog.getName(), catalog);
     }
 
     @Test
@@ -192,6 +208,61 @@ public class CatalogMgrTest {
         Assertions.assertTrue(restoredProperties.getTableOptionsMap().isEmpty());
     }
 
+    @Test
+    void testUnsupportedAddPartitionEventStillInvalidatesRowCount() throws Exception {
+        CatalogMgr catalogMgr = new CatalogMgr();
+        long catalogId = 46L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        HMSExternalTable table = Mockito.mock(HMSExternalTable.class);
+        Mockito.when(catalog.getId()).thenReturn(catalogId);
+        Mockito.when(catalog.getName()).thenReturn("hms");
+        Mockito.doReturn(db).when(catalog).getDbNullable("db1");
+        Mockito.when(db.getTableNullable("tbl1")).thenReturn(table);
+        Mockito.when(table.getPartitionColumnTypes(Mockito.any()))
+                .thenThrow(new NotSupportedException("unsupported table"));
+        addNamedCatalog(catalogMgr, catalog);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            catalogMgr.addExternalPartitions(
+                    "hms", "db1", "tbl1", Collections.singletonList("p=1"), 1L, false);
+        }
+
+        Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+        Mockito.verify(cacheMgr, Mockito.never()).hive(catalogId);
+    }
+
+    @Test
+    void testUnregisterDatabaseRemovesLocalEntryWhenEngineInvalidationFails() {
+        long catalogId = 47L;
+        long dbId = 48L;
+        TestingUnregisterCatalog catalog = new TestingUnregisterCatalog(catalogId);
+        @SuppressWarnings("unchecked")
+        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = Mockito.mock(MetaCache.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        Mockito.when(db.getId()).thenReturn(dbId);
+        Mockito.when(db.getFullName()).thenReturn("CanonicalDb");
+        Mockito.when(metaCache.tryGetMetaObj("CanonicalDb")).thenReturn(Optional.of(db));
+        catalog.installMetaCache(metaCache);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        Mockito.doThrow(new IllegalStateException("engine invalidation failed"))
+                .when(cacheMgr).invalidateDb(catalogId, dbId, "CanonicalDb");
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            Assertions.assertThrows(IllegalStateException.class,
+                    () -> catalog.unregisterDatabase("CanonicalDb"));
+        }
+
+        Mockito.verify(metaCache).invalidate("CanonicalDb", dbId);
+    }
+
     private static class LatchingValidationCatalog extends ExternalCatalog {
         private final CountDownLatch validationStarted = new CountDownLatch(1);
         private final CountDownLatch initializationReadProperties = new CountDownLatch(1);
@@ -241,6 +312,32 @@ public class CatalogMgrTest {
         @Override
         public void notifyPropertiesUpdated(Map<String, String> updatedProps) {
             // This test isolates edit-log property restoration from environment-owned cache services.
+        }
+    }
+
+    private static class TestingUnregisterCatalog extends ExternalCatalog {
+        TestingUnregisterCatalog(long id) {
+            super(id, "testing_catalog", InitCatalogLog.Type.TEST, "");
+            catalogProperty = new CatalogProperty(null, Collections.emptyMap());
+        }
+
+        void installMetaCache(MetaCache<ExternalDatabase<? extends ExternalTable>> cache) {
+            metaCache = cache;
+            initialized = true;
+        }
+
+        @Override
+        protected List<String> listTableNamesFromRemote(SessionContext ctx, String dbName) {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public boolean tableExist(SessionContext ctx, String dbName, String tblName) {
+            return false;
+        }
+
+        @Override
+        protected void initLocalObjectsImpl() {
         }
     }
 }
