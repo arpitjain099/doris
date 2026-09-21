@@ -1093,9 +1093,9 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         }
 
         HMSExternalTable hmsTable = (HMSExternalTable) table;
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         Env.getCurrentEnv().getExtMetaCacheMgr().hive(catalog.getId())
                 .dropPartitionsCache(hmsTable, partitionNames, true);
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         hmsTable.setUpdateTime(updateTime);
     }
 

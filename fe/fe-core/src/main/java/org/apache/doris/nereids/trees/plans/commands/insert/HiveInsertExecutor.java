@@ -88,10 +88,25 @@ public class HiveInsertExecutor extends BaseExternalTableInsertExecutor {
         List<String> modifiedPartNames = Lists.newArrayList();
         List<String> newPartNames = Lists.newArrayList();
         if (hmsTable.isPartitionedTable() && partitionUpdates != null && !partitionUpdates.isEmpty()) {
-            HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr()
-                    .hive(hmsTable.getCatalog().getId());
-            cache.refreshAffectedPartitions(hmsTable, partitionUpdates, modifiedPartNames, newPartNames);
             Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
+            try {
+                HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr()
+                        .hive(hmsTable.getCatalog().getId());
+                cache.refreshAffectedPartitions(hmsTable, partitionUpdates, modifiedPartNames, newPartNames);
+            } catch (RuntimeException e) {
+                // The transaction is already committed. Fall back to a full invalidation and a
+                // full-refresh edit log instead of reporting a failed insert or skipping peers.
+                LOG.warn("Failed to refresh affected partitions after committing Hive insert for {}",
+                        hmsTable.getNameWithFullQualifiers(), e);
+                modifiedPartNames.clear();
+                newPartNames.clear();
+                try {
+                    Env.getCurrentEnv().getExtMetaCacheMgr().invalidateTableCache(hmsTable);
+                } catch (RuntimeException fallbackException) {
+                    LOG.warn("Failed to invalidate table cache after committing Hive insert for {}",
+                            hmsTable.getNameWithFullQualifiers(), fallbackException);
+                }
+            }
         } else {
             // Non-partitioned table or no partition updates, do full table refresh
             Env.getCurrentEnv().getExtMetaCacheMgr().invalidateTableCache(hmsTable);

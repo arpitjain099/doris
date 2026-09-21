@@ -23,6 +23,7 @@ import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.datasource.hive.HMSExternalCatalog;
 import org.apache.doris.datasource.hive.HMSExternalTable;
+import org.apache.doris.datasource.hive.HiveExternalMetaCache;
 import org.apache.doris.datasource.metacache.MetaCache;
 import org.apache.doris.datasource.paimon.PaimonExternalCatalog;
 import org.apache.doris.datasource.property.metastore.AbstractPaimonProperties;
@@ -234,6 +235,81 @@ public class CatalogMgrTest {
 
         Mockito.verify(cacheMgr).invalidateRowCountCache(table);
         Mockito.verify(cacheMgr, Mockito.never()).hive(catalogId);
+    }
+
+    @Test
+    void testDropPartitionEventInvalidatesRowCountBeforeCacheFailure() throws Exception {
+        CatalogMgr catalogMgr = new CatalogMgr();
+        long catalogId = 49L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        HMSExternalTable table = Mockito.mock(HMSExternalTable.class);
+        Mockito.when(catalog.getId()).thenReturn(catalogId);
+        Mockito.when(catalog.getName()).thenReturn("hms");
+        Mockito.doReturn(db).when(catalog).getDbNullable("db1");
+        Mockito.when(db.getTableNullable("tbl1")).thenReturn(table);
+        addNamedCatalog(catalogMgr, catalog);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        HiveExternalMetaCache hiveCache = Mockito.mock(HiveExternalMetaCache.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        Mockito.when(cacheMgr.hive(catalogId)).thenReturn(hiveCache);
+        Mockito.doThrow(new IllegalStateException("partition cache failure"))
+                .when(hiveCache).dropPartitionsCache(
+                        Mockito.eq(table), Mockito.anyList(), Mockito.eq(true));
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            Assertions.assertThrows(IllegalStateException.class,
+                    () -> catalogMgr.dropExternalPartitions(
+                            "hms", "db1", "tbl1", Collections.singletonList("p=1"), 1L, false));
+        }
+
+        Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+    }
+
+    @Test
+    void testCatalogRefreshUsesSingleRowCountInvalidationOwner() {
+        long catalogId = 50L;
+        TestingUnregisterCatalog catalog = new TestingUnregisterCatalog(catalogId);
+        @SuppressWarnings("unchecked")
+        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = Mockito.mock(MetaCache.class);
+        catalog.installMetaCache(metaCache);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            catalog.onRefreshCache(true);
+        }
+
+        Mockito.verify(metaCache).invalidateAll();
+        Mockito.verify(cacheMgr).invalidateCatalog(catalogId);
+        Mockito.verify(cacheMgr, Mockito.never()).getRowCountCache();
+    }
+
+    @Test
+    void testMetadataOnlyRefreshStillInvalidatesRowCount() {
+        long catalogId = 51L;
+        TestingUnregisterCatalog catalog = new TestingUnregisterCatalog(catalogId);
+        @SuppressWarnings("unchecked")
+        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = Mockito.mock(MetaCache.class);
+        catalog.installMetaCache(metaCache);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        ExternalRowCountCache rowCountCache = Mockito.mock(ExternalRowCountCache.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        Mockito.when(cacheMgr.getRowCountCache()).thenReturn(rowCountCache);
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            catalog.onRefreshCache(false);
+        }
+
+        Mockito.verify(metaCache).invalidateAll();
+        Mockito.verify(rowCountCache).invalidateCatalog(catalogId);
+        Mockito.verify(cacheMgr, Mockito.never()).invalidateCatalog(Mockito.anyLong());
     }
 
     @Test

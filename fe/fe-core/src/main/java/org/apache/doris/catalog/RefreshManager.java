@@ -214,8 +214,8 @@ public class RefreshManager {
                 // Partition-level cache invalidation, only for hive catalog
                 HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr()
                         .hive(catalog.getId());
-                cache.refreshAffectedPartitionsCache((HMSExternalTable) table.get(), modifiedPartNames, newPartNames);
                 Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(table.get());
+                cache.refreshAffectedPartitionsCache((HMSExternalTable) table.get(), modifiedPartNames, newPartNames);
                 if (table.get() instanceof HMSExternalTable && log.getLastUpdateTime() > 0) {
                     ((HMSExternalTable) table.get()).setUpdateTime(log.getLastUpdateTime());
                 }

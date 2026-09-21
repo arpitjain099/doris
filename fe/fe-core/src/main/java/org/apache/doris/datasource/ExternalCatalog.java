@@ -713,7 +713,7 @@ public abstract class ExternalCatalog
      */
     public void onRefreshCache(boolean invalidCache) {
         setLastUpdateTime(System.currentTimeMillis());
-        refreshMetaCacheOnly();
+        refreshMetaCacheOnly(!invalidCache);
         if (invalidCache) {
             Env.getCurrentEnv().getExtMetaCacheMgr().invalidateCatalog(id);
         }
@@ -722,7 +722,7 @@ public abstract class ExternalCatalog
     /**
      * Refresh meta cache only (database level cache), without invalidating catalog level cache.
      */
-    private synchronized void refreshMetaCacheOnly() {
+    private synchronized void refreshMetaCacheOnly(boolean invalidateRowCountCache) {
         if (metaCache != null) {
             invalidatingAllMetaCache = true;
             try {
@@ -730,7 +730,9 @@ public abstract class ExternalCatalog
             } finally {
                 invalidatingAllMetaCache = false;
             }
-            Env.getCurrentEnv().getExtMetaCacheMgr().getRowCountCache().invalidateCatalog(id);
+            if (invalidateRowCountCache) {
+                Env.getCurrentEnv().getExtMetaCacheMgr().getRowCountCache().invalidateCatalog(id);
+            }
         }
     }
 
