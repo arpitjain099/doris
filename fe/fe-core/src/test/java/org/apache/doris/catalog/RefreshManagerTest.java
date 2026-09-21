@@ -89,4 +89,33 @@ public class RefreshManagerTest {
 
         Mockito.verify(cacheMgr).invalidateRowCountCache(table);
     }
+
+    @Test
+    void testAlterPartitionInvalidatesRowCountBeforeCacheFailure() throws Exception {
+        long catalogId = 53L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        HMSExternalTable table = Mockito.mock(HMSExternalTable.class);
+        Mockito.when(catalog.getId()).thenReturn(catalogId);
+        Mockito.doReturn(db).when(catalog).getDbNullable("db1");
+        Mockito.when(db.getTableNullable("tbl1")).thenReturn(table);
+        Mockito.when(table.getCatalog()).thenReturn(catalog);
+
+        CatalogMgr catalogMgr = Mockito.mock(CatalogMgr.class);
+        Mockito.doReturn(catalog).when(catalogMgr).getCatalog("hms");
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(cacheMgr.hive(catalogId)).thenThrow(new IllegalStateException("partition cache failure"));
+        Env env = Mockito.mock(Env.class);
+        Mockito.when(env.getCatalogMgr()).thenReturn(catalogMgr);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            Assertions.assertThrows(IllegalStateException.class,
+                    () -> new RefreshManager().refreshPartitions(
+                            "hms", "db1", "tbl1", java.util.Collections.singletonList("p=1"), 1L, true));
+        }
+
+        Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+    }
 }

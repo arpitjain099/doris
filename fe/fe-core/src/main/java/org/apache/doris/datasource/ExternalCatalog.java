@@ -186,6 +186,9 @@ public abstract class ExternalCatalog
     protected TransactionManager transactionManager;
     protected MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache;
     private volatile boolean invalidatingAllMetaCache;
+    // MetaCache removal listeners run synchronously. Explicit DB removal already owns routed and
+    // row-count invalidation, so its callback only resets the removed DB's local object state.
+    private transient ThreadLocal<Boolean> invalidatingDatabaseMetaCache = ThreadLocal.withInitial(() -> false);
     protected ExecutionAuthenticator executionAuthenticator;
     protected ThreadPoolExecutor threadPoolWithPreAuth;
     // Map lowercase database names to actual remote database names for case-insensitive lookup
@@ -432,7 +435,7 @@ public abstract class ExternalCatalog
                             buildDbForInit(null, localDbName, Util.genIdByName(name, localDbName), logType,
                                     true)),
                     (key, value, cause) -> value.ifPresent(
-                            v -> v.resetMetaToUninitialized(!invalidatingAllMetaCache)),
+                            v -> v.resetMetaToUninitialized(shouldInvalidateRowCountOnDatabaseRemoval())),
                     this::acquireMetadataLoadEpoch,
                     this::isMetadataLoadEpochCurrent);
         }
@@ -1056,6 +1059,7 @@ public abstract class ExternalCatalog
     public void gsonPostProcess() throws IOException {
         objectCreated = false;
         metadataLoadEpoch = new AtomicLong();
+        invalidatingDatabaseMetaCache = ThreadLocal.withInitial(() -> false);
         // TODO: This code is to compatible with older version of metadata.
         //  Could only remove after all users upgrate to the new version.
         if (logType == null) {
@@ -1241,21 +1245,33 @@ public abstract class ExternalCatalog
         // Resolve the canonical database object before removing it from the local metadata cache.
         // The row-count cache can outlive that object and must be invalidated by its numeric id.
         boolean catalogInitialized = isInitialized();
+        String resolvedLocalDbName = catalogInitialized ? getLocalDatabaseName(dbName, true) : null;
+        String localDbName = resolvedLocalDbName == null ? dbName : resolvedLocalDbName;
         Optional<ExternalDatabase<? extends ExternalTable>> db = catalogInitialized
-                ? getDbForReplay(dbName) : Optional.empty();
-        String localDbName = db.map(ExternalDatabase::getFullName).orElse(dbName);
+                ? metaCache.tryGetMetaObj(localDbName) : Optional.empty();
         long dbId = db.map(ExternalDatabase::getId).orElseGet(() -> Util.genIdByName(name, localDbName));
+        boolean hasCanonicalLocalIdentity = db.isPresent()
+                || resolvedLocalDbName != null && getLowerCaseDatabaseNames() != 0;
         try {
-            if (db.isPresent()) {
+            if (hasCanonicalLocalIdentity) {
                 Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbId, localDbName);
             } else {
                 Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(getId(), dbName);
             }
         } finally {
             if (catalogInitialized) {
-                metaCache.invalidate(localDbName, dbId);
+                invalidatingDatabaseMetaCache.set(true);
+                try {
+                    metaCache.invalidate(localDbName, dbId);
+                } finally {
+                    invalidatingDatabaseMetaCache.remove();
+                }
             }
         }
+    }
+
+    boolean shouldInvalidateRowCountOnDatabaseRemoval() {
+        return !invalidatingAllMetaCache && !invalidatingDatabaseMetaCache.get();
     }
 
     public void registerDatabase(long dbId, String dbName) {

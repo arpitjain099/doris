@@ -298,11 +298,11 @@ public class RefreshManager {
         }
 
         ExternalTable externalTable = (ExternalTable) table;
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(externalTable);
         HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr().hive(externalTable.getCatalog().getId());
         for (String partitionName : partitionNames) {
             cache.invalidatePartitionCache(externalTable, partitionName);
         }
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(externalTable);
         ((HMSExternalTable) table).setUpdateTime(updateTime);
     }
 

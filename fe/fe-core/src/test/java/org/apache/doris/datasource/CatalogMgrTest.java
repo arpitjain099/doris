@@ -21,6 +21,7 @@ import org.apache.doris.catalog.DatabaseIf;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.DdlException;
+import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.hive.HMSExternalCatalog;
 import org.apache.doris.datasource.hive.HMSExternalTable;
 import org.apache.doris.datasource.hive.HiveExternalMetaCache;
@@ -330,6 +331,10 @@ public class CatalogMgrTest {
         Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
         Mockito.doThrow(new IllegalStateException("engine invalidation failed"))
                 .when(cacheMgr).invalidateDb(catalogId, dbId, "CanonicalDb");
+        Mockito.doAnswer(invocation -> {
+            Assertions.assertFalse(catalog.shouldInvalidateRowCountOnDatabaseRemoval());
+            return null;
+        }).when(metaCache).invalidate("CanonicalDb", dbId);
         try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
             mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
             Assertions.assertThrows(IllegalStateException.class,
@@ -337,6 +342,68 @@ public class CatalogMgrTest {
         }
 
         Mockito.verify(metaCache).invalidate("CanonicalDb", dbId);
+    }
+
+    @Test
+    void testColdModeTwoDatabaseRemovalUsesCanonicalName() throws Exception {
+        long catalogId = 52L;
+        Map<String, String> properties = ImmutableMap.of(ExternalCatalog.LOWER_CASE_DATABASE_NAMES, "2");
+        TestingUnregisterCatalog catalog = new TestingUnregisterCatalog(catalogId, properties);
+        @SuppressWarnings("unchecked")
+        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = Mockito.mock(MetaCache.class);
+        Mockito.when(metaCache.tryGetMetaObj("MixedCaseDb")).thenReturn(Optional.empty());
+        catalog.installMetaCache(metaCache);
+        setCanonicalDatabaseName(catalog, "mixedcasedb", "MixedCaseDb");
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        long dbId = Util.genIdByName("testing_catalog", "MixedCaseDb");
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            catalog.unregisterDatabase("mixedcasedb");
+        }
+
+        Mockito.verify(cacheMgr).invalidateDb(catalogId, dbId, "MixedCaseDb");
+        Mockito.verify(metaCache).invalidate("MixedCaseDb", dbId);
+    }
+
+    @Test
+    void testResidentDatabaseRemovalUsesOneInvalidationOwner() {
+        long catalogId = 53L;
+        long dbId = 54L;
+        TestingUnregisterCatalog catalog = new TestingUnregisterCatalog(catalogId);
+        @SuppressWarnings("unchecked")
+        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = Mockito.mock(MetaCache.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        Mockito.when(db.getId()).thenReturn(dbId);
+        Mockito.when(db.getFullName()).thenReturn("CanonicalDb");
+        Mockito.when(metaCache.tryGetMetaObj("CanonicalDb")).thenReturn(Optional.of(db));
+        catalog.installMetaCache(metaCache);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        Mockito.doAnswer(invocation -> {
+            Assertions.assertFalse(catalog.shouldInvalidateRowCountOnDatabaseRemoval());
+            db.resetMetaToUninitialized(catalog.shouldInvalidateRowCountOnDatabaseRemoval());
+            return null;
+        }).when(metaCache).invalidate("CanonicalDb", dbId);
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            catalog.unregisterDatabase("CanonicalDb");
+        }
+
+        Mockito.verify(cacheMgr, Mockito.times(1)).invalidateDb(catalogId, dbId, "CanonicalDb");
+        Mockito.verify(metaCache).invalidate("CanonicalDb", dbId);
+    }
+
+    private static void setCanonicalDatabaseName(
+            ExternalCatalog catalog, String lookupName, String canonicalName) throws Exception {
+        Field field = ExternalCatalog.class.getDeclaredField("lowerCaseToDatabaseName");
+        field.setAccessible(true);
+        field.set(catalog, new java.util.concurrent.ConcurrentHashMap<>(
+                Collections.singletonMap(lookupName, canonicalName)));
     }
 
     private static class LatchingValidationCatalog extends ExternalCatalog {
@@ -393,8 +460,12 @@ public class CatalogMgrTest {
 
     private static class TestingUnregisterCatalog extends ExternalCatalog {
         TestingUnregisterCatalog(long id) {
+            this(id, Collections.emptyMap());
+        }
+
+        TestingUnregisterCatalog(long id, Map<String, String> properties) {
             super(id, "testing_catalog", InitCatalogLog.Type.TEST, "");
-            catalogProperty = new CatalogProperty(null, Collections.emptyMap());
+            catalogProperty = new CatalogProperty(null, properties);
         }
 
         void installMetaCache(MetaCache<ExternalDatabase<? extends ExternalTable>> cache) {
