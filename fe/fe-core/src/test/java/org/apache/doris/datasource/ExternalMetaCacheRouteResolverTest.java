@@ -469,6 +469,33 @@ public class ExternalMetaCacheRouteResolverTest {
         Mockito.verify(rowCountCache).invalidateTable(catalogId, dbId, tableId);
     }
 
+    @Test
+    public void testDatabaseInvalidationCanPreserveSingleBulkRowCountOwner() throws Exception {
+        RecordingExternalMetaCache hive = new RecordingExternalMetaCache(
+                "hive", Collections.singletonList("hms"), catalog -> catalog instanceof HMSExternalCatalog);
+        RecordingExternalMetaCache hudi = new RecordingExternalMetaCache(
+                "hudi", Collections.emptyList(), catalog -> catalog instanceof HMSExternalCatalog);
+        RecordingExternalMetaCache iceberg = new RecordingExternalMetaCache(
+                "iceberg", Collections.emptyList(), catalog -> catalog instanceof HMSExternalCatalog);
+        ExternalMetaCacheMgr metaCacheMgr = newManagerWithCaches(hive, hudi, iceberg);
+        ExternalRowCountCache rowCountCache = Mockito.mock(ExternalRowCountCache.class);
+        metaCacheMgr.replaceRowCountCacheForTest(rowCountCache);
+        long catalogId = 20L;
+        long dbId = 21L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        mockCurrentCatalog(catalogId, catalog);
+        hive.initializedCatalogIds.add(catalogId);
+        hudi.initializedCatalogIds.add(catalogId);
+        iceberg.initializedCatalogIds.add(catalogId);
+
+        metaCacheMgr.invalidateDb(catalogId, dbId, "db1", false);
+
+        Assert.assertEquals(1, hive.invalidateDbCalls);
+        Assert.assertEquals(1, hudi.invalidateDbCalls);
+        Assert.assertEquals(1, iceberg.invalidateDbCalls);
+        Mockito.verifyNoInteractions(rowCountCache);
+    }
+
     @SuppressWarnings("unchecked")
     private ExternalMetaCacheMgr newManagerWithCaches(RecordingExternalMetaCache... caches) throws Exception {
         ExternalMetaCacheMgr metaCacheMgr = new ExternalMetaCacheMgr(true);

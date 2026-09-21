@@ -120,10 +120,14 @@ public abstract class ExternalDatabase<T extends ExternalTable>
     }
 
     public void resetMetaToUninitialized() {
-        resetMetaToUninitialized(true);
+        resetMetaToUninitialized(true, true);
     }
 
     void resetMetaToUninitialized(boolean invalidateRowCountCache) {
+        resetMetaToUninitialized(true, invalidateRowCountCache);
+    }
+
+    void resetMetaToUninitialized(boolean invalidateRoutedCache, boolean invalidateRowCountCache) {
         if (LOG.isDebugEnabled()) {
             LOG.debug("resetToUninitialized db name {}, id {}, isInitializing: {}, initialized: {}",
                     this.name, this.id, isInitializing, initialized, new Exception());
@@ -146,8 +150,9 @@ public abstract class ExternalDatabase<T extends ExternalTable>
                 objectInvalidation.run();
             }
         }
-        if (invalidateRowCountCache) {
-            Env.getCurrentEnv().getExtMetaCacheMgr().invalidateDb(extCatalog.getId(), getId(), getFullName());
+        if (invalidateRoutedCache) {
+            Env.getCurrentEnv().getExtMetaCacheMgr()
+                    .invalidateDb(extCatalog.getId(), getId(), getFullName(), invalidateRowCountCache);
         }
     }
 

@@ -171,6 +171,22 @@ public class RefreshManager {
         Env.getCurrentEnv().getEditLog().logRefreshExternalTable(log);
     }
 
+    public void refreshTableAfterCommit(ExternalTable table) {
+        long updateTime = System.currentTimeMillis();
+        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(table);
+        try {
+            refreshTableInternal((ExternalDatabase) table.getDatabase(), table, updateTime);
+        } catch (RuntimeException e) {
+            // The external transaction is already committed and its row-count fence was published
+            // above. Still notify follower FEs even if another cache layer fails to refresh.
+            LOG.warn("Failed to refresh table cache after committing external insert for {}",
+                    table.getNameWithFullQualifiers(), e);
+        }
+        ExternalObjectLog log = ExternalObjectLog.createForRefreshTable(
+                table.getCatalog().getId(), table.getDatabase().getFullName(), table.getName(), updateTime);
+        Env.getCurrentEnv().getEditLog().logRefreshExternalTable(log);
+    }
+
     public void replayRefreshTable(ExternalObjectLog log) {
         ExternalCatalog catalog = (ExternalCatalog) Env.getCurrentEnv().getCatalogMgr().getCatalog(log.getCatalogId());
         if (catalog == null) {

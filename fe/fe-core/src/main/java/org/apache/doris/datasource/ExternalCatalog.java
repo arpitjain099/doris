@@ -434,8 +434,7 @@ public abstract class ExternalCatalog
                     localDbName -> Optional.ofNullable(
                             buildDbForInit(null, localDbName, Util.genIdByName(name, localDbName), logType,
                                     true)),
-                    (key, value, cause) -> value.ifPresent(
-                            v -> v.resetMetaToUninitialized(shouldInvalidateRowCountOnDatabaseRemoval())),
+                    (key, value, cause) -> handleDatabaseMetaCacheRemoval(value),
                     this::acquireMetadataLoadEpoch,
                     this::isMetadataLoadEpochCurrent);
         }
@@ -1272,6 +1271,16 @@ public abstract class ExternalCatalog
 
     boolean shouldInvalidateRowCountOnDatabaseRemoval() {
         return !invalidatingAllMetaCache && !invalidatingDatabaseMetaCache.get();
+    }
+
+    boolean shouldInvalidateRoutedCacheOnDatabaseRemoval() {
+        return !invalidatingDatabaseMetaCache.get();
+    }
+
+    void handleDatabaseMetaCacheRemoval(Optional<ExternalDatabase<? extends ExternalTable>> value) {
+        value.ifPresent(v -> v.resetMetaToUninitialized(
+                shouldInvalidateRoutedCacheOnDatabaseRemoval(),
+                shouldInvalidateRowCountOnDatabaseRemoval()));
     }
 
     public void registerDatabase(long dbId, String dbName) {

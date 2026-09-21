@@ -22,12 +22,15 @@ import org.apache.doris.datasource.ExternalCatalog;
 import org.apache.doris.datasource.ExternalDatabase;
 import org.apache.doris.datasource.ExternalMetaCacheMgr;
 import org.apache.doris.datasource.ExternalObjectLog;
+import org.apache.doris.datasource.ExternalTable;
 import org.apache.doris.datasource.hive.HMSExternalCatalog;
 import org.apache.doris.datasource.hive.HMSExternalTable;
 import org.apache.doris.datasource.hive.HiveExternalMetaCache;
+import org.apache.doris.persist.EditLog;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
@@ -98,7 +101,7 @@ public class RefreshManagerTest {
         HMSExternalTable table = Mockito.mock(HMSExternalTable.class);
         Mockito.when(catalog.getId()).thenReturn(catalogId);
         Mockito.doReturn(db).when(catalog).getDbNullable("db1");
-        Mockito.when(db.getTableNullable("tbl1")).thenReturn(table);
+        Mockito.doReturn(table).when(db).getTableNullable("tbl1");
         Mockito.when(table.getCatalog()).thenReturn(catalog);
 
         CatalogMgr catalogMgr = Mockito.mock(CatalogMgr.class);
@@ -117,5 +120,40 @@ public class RefreshManagerTest {
         }
 
         Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+    }
+
+    @Test
+    void testCommittedRefreshUsesHeldTableAndStillLogsAfterCacheFailure() {
+        long catalogId = 54L;
+        ExternalCatalog catalog = Mockito.mock(ExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        ExternalTable table = Mockito.mock(ExternalTable.class);
+        Mockito.when(catalog.getId()).thenReturn(catalogId);
+        Mockito.when(db.getFullName()).thenReturn("db1");
+        Mockito.when(table.getCatalog()).thenReturn(catalog);
+        Mockito.when(table.getDatabase()).thenReturn(db);
+        Mockito.when(table.getName()).thenReturn("tbl1");
+        Mockito.when(table.getNameWithFullQualifiers()).thenReturn("ctl.db1.tbl1");
+
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.doThrow(new IllegalStateException("table cache failure"))
+                .when(cacheMgr).invalidateTableCache(table);
+        EditLog editLog = Mockito.mock(EditLog.class);
+        Env env = Mockito.mock(Env.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        Mockito.when(env.getEditLog()).thenReturn(editLog);
+
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            Assertions.assertDoesNotThrow(() -> new RefreshManager().refreshTableAfterCommit(table));
+        }
+
+        InOrder order = Mockito.inOrder(cacheMgr, editLog);
+        order.verify(cacheMgr).invalidateRowCountCache(table);
+        order.verify(cacheMgr).invalidateTableCache(table);
+        order.verify(editLog).logRefreshExternalTable(Mockito.argThat(log ->
+                log.getCatalogId() == catalogId
+                        && "db1".equals(log.getDbName())
+                        && "tbl1".equals(log.getTableName())));
     }
 }

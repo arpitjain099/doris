@@ -66,10 +66,12 @@ public class ExternalRowCountCacheTest {
         };
 
         db.resetMetaToUninitialized(false);
-        Mockito.verifyNoInteractions(metaCacheMgr);
+        Mockito.verify(metaCacheMgr).invalidateDb(1L, 2L, "db", false);
+
+        db.resetMetaToUninitialized(false, false);
 
         db.resetMetaToUninitialized();
-        Mockito.verify(metaCacheMgr).invalidateDb(1L, 2L, "db");
+        Mockito.verify(metaCacheMgr).invalidateDb(1L, 2L, "db", true);
     }
 
     @Test

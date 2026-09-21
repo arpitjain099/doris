@@ -42,6 +42,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -220,7 +221,7 @@ public class CatalogMgrTest {
         Mockito.when(catalog.getId()).thenReturn(catalogId);
         Mockito.when(catalog.getName()).thenReturn("hms");
         Mockito.doReturn(db).when(catalog).getDbNullable("db1");
-        Mockito.when(db.getTableNullable("tbl1")).thenReturn(table);
+        Mockito.doReturn(table).when(db).getTableNullable("tbl1");
         Mockito.when(table.getPartitionColumnTypes(Mockito.any()))
                 .thenThrow(new NotSupportedException("unsupported table"));
         addNamedCatalog(catalogMgr, catalog);
@@ -248,7 +249,7 @@ public class CatalogMgrTest {
         Mockito.when(catalog.getId()).thenReturn(catalogId);
         Mockito.when(catalog.getName()).thenReturn("hms");
         Mockito.doReturn(db).when(catalog).getDbNullable("db1");
-        Mockito.when(db.getTableNullable("tbl1")).thenReturn(table);
+        Mockito.doReturn(table).when(db).getTableNullable("tbl1");
         addNamedCatalog(catalogMgr, catalog);
 
         Env env = Mockito.mock(Env.class);
@@ -293,9 +294,27 @@ public class CatalogMgrTest {
     @Test
     void testMetadataOnlyRefreshStillInvalidatesRowCount() {
         long catalogId = 51L;
+        long dbId = 52L;
         TestingUnregisterCatalog catalog = new TestingUnregisterCatalog(catalogId);
-        @SuppressWarnings("unchecked")
-        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = Mockito.mock(MetaCache.class);
+        ExternalDatabase<ExternalTable> db = new ExternalDatabase<ExternalTable>(
+                catalog, dbId, "db1", "db1", InitDatabaseLog.Type.TEST) {
+            @Override
+            protected ExternalTable buildTableInternal(String remoteTableName, String localTableName, long tblId,
+                    ExternalCatalog externalCatalog, ExternalDatabase externalDatabase) {
+                return null;
+            }
+        };
+        ExecutorService removalExecutor = Executors.newSingleThreadExecutor();
+        MetaCache<ExternalDatabase<? extends ExternalTable>> metaCache = new MetaCache<>(
+                "databaseCache",
+                removalExecutor,
+                OptionalLong.empty(),
+                OptionalLong.empty(),
+                10,
+                key -> Collections.emptyList(),
+                key -> Optional.empty(),
+                (key, value, cause) -> catalog.handleDatabaseMetaCacheRemoval(value));
+        metaCache.updateCache("db1", "db1", db, dbId);
         catalog.installMetaCache(metaCache);
 
         Env env = Mockito.mock(Env.class);
@@ -303,12 +322,16 @@ public class CatalogMgrTest {
         ExternalRowCountCache rowCountCache = Mockito.mock(ExternalRowCountCache.class);
         Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
         Mockito.when(cacheMgr.getRowCountCache()).thenReturn(rowCountCache);
-        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
-            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
-            catalog.onRefreshCache(false);
+        try {
+            try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+                mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+                catalog.onRefreshCache(false);
+            }
+        } finally {
+            removalExecutor.shutdownNow();
         }
 
-        Mockito.verify(metaCache).invalidateAll();
+        Mockito.verify(cacheMgr).invalidateDb(catalogId, dbId, "db1", false);
         Mockito.verify(rowCountCache).invalidateCatalog(catalogId);
         Mockito.verify(cacheMgr, Mockito.never()).invalidateCatalog(Mockito.anyLong());
     }
@@ -386,7 +409,9 @@ public class CatalogMgrTest {
         Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
         Mockito.doAnswer(invocation -> {
             Assertions.assertFalse(catalog.shouldInvalidateRowCountOnDatabaseRemoval());
-            db.resetMetaToUninitialized(catalog.shouldInvalidateRowCountOnDatabaseRemoval());
+            db.resetMetaToUninitialized(
+                    catalog.shouldInvalidateRoutedCacheOnDatabaseRemoval(),
+                    catalog.shouldInvalidateRowCountOnDatabaseRemoval());
             return null;
         }).when(metaCache).invalidate("CanonicalDb", dbId);
         try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {

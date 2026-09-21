@@ -19,10 +19,14 @@ package org.apache.doris.nereids.trees.plans.commands.insert;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.EnvFactory;
+import org.apache.doris.catalog.RefreshManager;
 import org.apache.doris.common.DdlException;
+import org.apache.doris.common.UserException;
+import org.apache.doris.datasource.ExternalCatalog;
 import org.apache.doris.datasource.ExternalDatabase;
 import org.apache.doris.datasource.ExternalMetaCacheMgr;
 import org.apache.doris.datasource.ExternalObjectLog;
+import org.apache.doris.datasource.ExternalTable;
 import org.apache.doris.datasource.hive.HMSExternalCatalog;
 import org.apache.doris.datasource.hive.HMSExternalTable;
 import org.apache.doris.datasource.hive.HiveExternalMetaCache;
@@ -32,6 +36,7 @@ import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.Coordinator;
 import org.apache.doris.thrift.THivePartitionUpdate;
 import org.apache.doris.transaction.TransactionManager;
+import org.apache.doris.transaction.TransactionType;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -114,6 +119,38 @@ class HiveInsertExecutorTest {
         Assertions.assertNull(log.getNewPartitionNames());
     }
 
+    @Test
+    void testDefaultPostCommitRefreshUsesHeldTableIdentity() throws Exception {
+        ConnectContext ctx = new ConnectContext();
+        ctx.setThreadLocalInfo();
+
+        ExternalCatalog catalog = Mockito.mock(ExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        ExternalTable table = Mockito.mock(ExternalTable.class);
+        Mockito.when(catalog.getName()).thenReturn("iceberg");
+        Mockito.when(catalog.getTransactionManager()).thenReturn(Mockito.mock(TransactionManager.class));
+        Mockito.when(table.getCatalog()).thenReturn(catalog);
+        Mockito.when(table.getDatabase()).thenReturn(db);
+
+        Env env = Mockito.mock(Env.class);
+        RefreshManager refreshManager = Mockito.mock(RefreshManager.class);
+        Mockito.when(env.getRefreshManager()).thenReturn(refreshManager);
+        EnvFactory envFactory = Mockito.mock(EnvFactory.class);
+        Mockito.when(envFactory.createCoordinator(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.anyLong()))
+                .thenReturn(Mockito.mock(Coordinator.class));
+        try (MockedStatic<EnvFactory> mockedEnvFactory = Mockito.mockStatic(EnvFactory.class);
+                MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnvFactory.when(EnvFactory::getInstance).thenReturn(envFactory);
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+
+            TestingExternalInsertExecutor executor = new TestingExternalInsertExecutor(
+                    ctx, table, Mockito.mock(NereidsPlanner.class));
+            executor.runAfterCommit();
+        }
+
+        Mockito.verify(refreshManager).refreshTableAfterCommit(table);
+    }
+
     private static class TestingHiveInsertExecutor extends HiveInsertExecutor {
         TestingHiveInsertExecutor(ConnectContext ctx, HMSExternalTable table, NereidsPlanner planner) {
             super(ctx, table, "label", planner, Optional.empty(), false, 0L);
@@ -123,6 +160,29 @@ class HiveInsertExecutorTest {
             Field field = HiveInsertExecutor.class.getDeclaredField("partitionUpdates");
             field.setAccessible(true);
             field.set(this, updates);
+        }
+
+        void runAfterCommit() throws DdlException {
+            doAfterCommit();
+        }
+    }
+
+    private static class TestingExternalInsertExecutor extends BaseExternalTableInsertExecutor {
+        TestingExternalInsertExecutor(ConnectContext ctx, ExternalTable table, NereidsPlanner planner) {
+            super(ctx, table, "label", planner, Optional.empty(), false, 0L);
+        }
+
+        @Override
+        protected void beforeExec() throws UserException {
+        }
+
+        @Override
+        protected void doBeforeCommit() throws UserException {
+        }
+
+        @Override
+        protected TransactionType transactionType() {
+            return TransactionType.ICEBERG;
         }
 
         void runAfterCommit() throws DdlException {

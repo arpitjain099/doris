@@ -500,20 +500,30 @@ public class ExternalMetaCacheMgr {
     }
 
     public void invalidateDb(long catalogId, long dbId, String dbName) {
-        invalidateDb(catalogId, dbName, OptionalLong.of(dbId));
+        invalidateDb(catalogId, dbName, OptionalLong.of(dbId), true);
     }
 
     private void invalidateDb(long catalogId, String dbName, OptionalLong dbId) {
+        invalidateDb(catalogId, dbName, dbId, true);
+    }
+
+    void invalidateDb(long catalogId, long dbId, String dbName, boolean invalidateRowCountCache) {
+        invalidateDb(catalogId, dbName, OptionalLong.of(dbId), invalidateRowCountCache);
+    }
+
+    private void invalidateDb(long catalogId, String dbName, OptionalLong dbId, boolean invalidateRowCountCache) {
         try {
             routeCatalogEngines(catalogId, cache -> safeInvalidate(
                     cache, catalogId, "invalidateDb", () -> cache.invalidateDb(catalogId, dbName)));
         } finally {
-            if (dbId.isPresent()) {
-                rowCountCache.invalidateDb(catalogId, dbId.getAsLong());
-            } else {
-                // The database object cache is smaller than the row-count cache. If the object has
-                // already been evicted, retire the catalog scope rather than hashing caller spelling.
-                rowCountCache.invalidateCatalog(catalogId);
+            if (invalidateRowCountCache) {
+                if (dbId.isPresent()) {
+                    rowCountCache.invalidateDb(catalogId, dbId.getAsLong());
+                } else {
+                    // The database object cache is smaller than the row-count cache. If the object has
+                    // already been evicted, retire the catalog scope rather than hashing caller spelling.
+                    rowCountCache.invalidateCatalog(catalogId);
+                }
             }
         }
     }
