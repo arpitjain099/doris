@@ -119,12 +119,38 @@ public class RefreshManagerTest {
                             "hms", "db1", "tbl1", java.util.Collections.singletonList("p=1"), 1L, true));
         }
 
-        Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+        Mockito.verify(cacheMgr).invalidateRowCountCache(catalogId, "db1", "tbl1");
+    }
+
+    @Test
+    void testColdAlterPartitionEventFencesRowCountBeforeIgnoredTableMiss() throws Exception {
+        long catalogId = 54L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        Mockito.when(catalog.getId()).thenReturn(catalogId);
+        Mockito.doReturn(db).when(catalog).getDbNullable("db1");
+        Mockito.doReturn(null).when(db).getTableNullable("tbl1");
+
+        CatalogMgr catalogMgr = Mockito.mock(CatalogMgr.class);
+        Mockito.doReturn(catalog).when(catalogMgr).getCatalog("hms");
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Env env = Mockito.mock(Env.class);
+        Mockito.when(env.getCatalogMgr()).thenReturn(catalogMgr);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            new RefreshManager().refreshPartitions(
+                    "hms", "db1", "tbl1", java.util.Collections.singletonList("p=1"), 1L, true);
+        }
+
+        Mockito.verify(cacheMgr).invalidateRowCountCache(catalogId, "db1", "tbl1");
+        Mockito.verify(cacheMgr, Mockito.never()).hive(catalogId);
     }
 
     @Test
     void testCommittedRefreshUsesHeldTableAndStillLogsAfterCacheFailure() {
-        long catalogId = 54L;
+        long catalogId = 55L;
         ExternalCatalog catalog = Mockito.mock(ExternalCatalog.class);
         ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
         ExternalTable table = Mockito.mock(ExternalTable.class);

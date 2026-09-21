@@ -496,6 +496,26 @@ public class ExternalMetaCacheRouteResolverTest {
         Mockito.verifyNoInteractions(rowCountCache);
     }
 
+    @Test
+    public void testNameBasedRowCountFenceFallsBackToDatabaseWhenTableIsCold() {
+        long catalogId = 22L;
+        long dbId = 23L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        Mockito.when(catalog.getDbForReplay("db1")).thenReturn(Optional.of(db));
+        Mockito.when(db.getId()).thenReturn(dbId);
+        Mockito.doReturn(Optional.empty()).when(db).getTableForReplay("tbl1");
+        mockCurrentCatalog(catalogId, catalog);
+
+        ExternalMetaCacheMgr metaCacheMgr = new ExternalMetaCacheMgr(true);
+        ExternalRowCountCache rowCountCache = Mockito.mock(ExternalRowCountCache.class);
+        metaCacheMgr.replaceRowCountCacheForTest(rowCountCache);
+
+        metaCacheMgr.invalidateRowCountCache(catalogId, "db1", "tbl1");
+
+        Mockito.verify(rowCountCache).invalidateDb(catalogId, dbId);
+    }
+
     @SuppressWarnings("unchecked")
     private ExternalMetaCacheMgr newManagerWithCaches(RecordingExternalMetaCache... caches) throws Exception {
         ExternalMetaCacheMgr metaCacheMgr = new ExternalMetaCacheMgr(true);

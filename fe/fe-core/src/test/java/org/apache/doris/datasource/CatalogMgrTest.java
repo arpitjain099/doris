@@ -235,7 +235,7 @@ public class CatalogMgrTest {
                     "hms", "db1", "tbl1", Collections.singletonList("p=1"), 1L, false);
         }
 
-        Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+        Mockito.verify(cacheMgr).invalidateRowCountCache(catalogId, "db1", "tbl1");
         Mockito.verify(cacheMgr, Mockito.never()).hive(catalogId);
     }
 
@@ -267,7 +267,35 @@ public class CatalogMgrTest {
                             "hms", "db1", "tbl1", Collections.singletonList("p=1"), 1L, false));
         }
 
-        Mockito.verify(cacheMgr).invalidateRowCountCache(table);
+        Mockito.verify(cacheMgr).invalidateRowCountCache(catalogId, "db1", "tbl1");
+    }
+
+    @Test
+    void testColdPartitionEventsFenceRowCountBeforeIgnoredTableMiss() throws Exception {
+        CatalogMgr catalogMgr = new CatalogMgr();
+        long catalogId = 50L;
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        ExternalDatabase<?> db = Mockito.mock(ExternalDatabase.class);
+        Mockito.when(catalog.getId()).thenReturn(catalogId);
+        Mockito.when(catalog.getName()).thenReturn("hms");
+        Mockito.doReturn(db).when(catalog).getDbNullable("db1");
+        Mockito.doReturn(null).when(db).getTableNullable("tbl1");
+        addNamedCatalog(catalogMgr, catalog);
+
+        Env env = Mockito.mock(Env.class);
+        ExternalMetaCacheMgr cacheMgr = Mockito.mock(ExternalMetaCacheMgr.class);
+        Mockito.when(env.getExtMetaCacheMgr()).thenReturn(cacheMgr);
+        try (MockedStatic<Env> mockedEnv = Mockito.mockStatic(Env.class)) {
+            mockedEnv.when(Env::getCurrentEnv).thenReturn(env);
+            catalogMgr.addExternalPartitions(
+                    "hms", "db1", "tbl1", Collections.singletonList("p=1"), 1L, true);
+            catalogMgr.dropExternalPartitions(
+                    "hms", "db1", "tbl1", Collections.singletonList("p=1"), 1L, true);
+        }
+
+        Mockito.verify(cacheMgr, Mockito.times(2))
+                .invalidateRowCountCache(catalogId, "db1", "tbl1");
+        Mockito.verify(cacheMgr, Mockito.never()).hive(catalogId);
     }
 
     @Test

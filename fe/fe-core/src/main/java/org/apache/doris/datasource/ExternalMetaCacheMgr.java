@@ -787,6 +787,10 @@ public class ExternalMetaCacheMgr {
         rowCountCache.invalidateDb(catalogId, dbId);
     }
 
+    public void invalidateRowCountCache(long catalogId, String dbName, String tableName) {
+        invalidateTableRowCount(catalogId, getCachedDb(catalogId, dbName), tableName);
+    }
+
     public LegacyMetaCacheFactory legacyMetaCacheFactory() {
         return legacyMetaCacheFactory;
     }

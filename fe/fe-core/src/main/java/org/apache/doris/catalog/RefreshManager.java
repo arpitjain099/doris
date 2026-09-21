@@ -297,6 +297,10 @@ public class RefreshManager {
         if (!(catalog instanceof ExternalCatalog)) {
             throw new DdlException("Only support ExternalCatalog");
         }
+        // Partition events are already committed remotely. Fence the cache by cached identity
+        // before any database/table reload can fail and make the ignored-not-found path return.
+        Env.getCurrentEnv().getExtMetaCacheMgr()
+                .invalidateRowCountCache(catalog.getId(), dbName, tableName);
         DatabaseIf db = catalog.getDbNullable(dbName);
         if (db == null) {
             if (!ignoreIfNotExists) {
@@ -314,7 +318,6 @@ public class RefreshManager {
         }
 
         ExternalTable externalTable = (ExternalTable) table;
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(externalTable);
         HiveExternalMetaCache cache = Env.getCurrentEnv().getExtMetaCacheMgr().hive(externalTable.getCatalog().getId());
         for (String partitionName : partitionNames) {
             cache.invalidatePartitionCache(externalTable, partitionName);

@@ -1029,6 +1029,10 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         if (!(catalog instanceof ExternalCatalog)) {
             throw new DdlException("Only support ExternalCatalog");
         }
+        // Partition events are already committed remotely. Fence the cache by cached identity
+        // before any database/table reload can fail and make the ignored-not-found path return.
+        Env.getCurrentEnv().getExtMetaCacheMgr()
+                .invalidateRowCountCache(catalog.getId(), dbName, tableName);
         DatabaseIf db = catalog.getDbNullable(dbName);
         if (db == null) {
             if (!ignoreIfNotExists) {
@@ -1050,10 +1054,6 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         }
 
         HMSExternalTable hmsTable = (HMSExternalTable) table;
-        // The metastore mutation has already committed when this event is handled. Fence the
-        // independent row-count cache even when the local partition cache cannot represent the
-        // table and this method returns early.
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         List<Type> partitionColumnTypes;
         try {
             partitionColumnTypes = hmsTable.getPartitionColumnTypes(MvccUtil.getSnapshotFromContext(hmsTable));
@@ -1076,6 +1076,10 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         if (!(catalog instanceof ExternalCatalog)) {
             throw new DdlException("Only support ExternalCatalog");
         }
+        // Partition events are already committed remotely. Fence the cache by cached identity
+        // before any database/table reload can fail and make the ignored-not-found path return.
+        Env.getCurrentEnv().getExtMetaCacheMgr()
+                .invalidateRowCountCache(catalog.getId(), dbName, tableName);
         DatabaseIf db = catalog.getDbNullable(dbName);
         if (db == null) {
             if (!ignoreIfNotExists) {
@@ -1093,7 +1097,6 @@ public class CatalogMgr implements Writable, GsonPostProcessable {
         }
 
         HMSExternalTable hmsTable = (HMSExternalTable) table;
-        Env.getCurrentEnv().getExtMetaCacheMgr().invalidateRowCountCache(hmsTable);
         Env.getCurrentEnv().getExtMetaCacheMgr().hive(catalog.getId())
                 .dropPartitionsCache(hmsTable, partitionNames, true);
         hmsTable.setUpdateTime(updateTime);
