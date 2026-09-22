@@ -19,11 +19,9 @@ package org.apache.doris.datasource;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.TableIf;
-import org.apache.doris.common.Config;
 import org.apache.doris.common.ThreadPoolManager;
 import org.apache.doris.statistics.util.StatisticsUtil;
 
-import com.google.common.testing.FakeTicker;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.Uninterruptibles;
 import mockit.Mock;
@@ -174,13 +172,12 @@ public class ExternalRowCountCacheTest {
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
-            FakeTicker ticker = new FakeTicker();
-            ExternalRowCountCache cache = new ExternalRowCountCache(executor, ticker::read, loader);
+            ExternalRowCountCache cache = new ExternalRowCountCache(executor, null, loader);
             Assertions.assertEquals(100L, cache.getCachedRowCount(1, 10, 100, false));
 
-            ticker.advance(Config.external_cache_refresh_time_minutes + 1, TimeUnit.MINUTES);
-            Assertions.assertEquals(100L, cache.getCachedRowCount(1, 10, 100, false));
+            cache.refreshForTest(1, 10, 100);
             Assertions.assertTrue(refreshStarted.await(30, TimeUnit.SECONDS));
+            Assertions.assertEquals(100L, cache.getCachedRowCount(1, 10, 100, false));
 
             cache.invalidateTable(1, 10, 100);
             allowRefreshToFinish.countDown();

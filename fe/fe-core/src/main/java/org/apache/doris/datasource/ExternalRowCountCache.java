@@ -218,6 +218,10 @@ public class ExternalRowCountCache {
         }
     }
 
+    void refreshForTest(long catalogId, long dbId, long tableId) {
+        rowCountCache.synchronous().refresh(new RowCountKey(catalogId, dbId, tableId));
+    }
+
     static Optional<Long> loadRowCount(RowCountKey rowCountKey, boolean fillMetaCache) {
         try {
             ExternalTable table = (ExternalTable) StatisticsUtil.findTable(
